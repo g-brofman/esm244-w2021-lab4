@@ -1,0 +1,174 @@
+---
+title: "Intro to time series wrangling and viz"
+author: "Grace Brofman"
+date: "1/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(here)
+library(lubridate)
+library(tsibble)
+library(feasts) # for ACF
+library(slider)
+
+```
+
+## Read in the data
+```{r}
+
+toolik <- read_csv(here("data", "toolikweather.csv")) #date is currently classified as a character (which is not good for time series)
+
+```
+
+### Convert this into a tsibble (time series tibble)
+
+use lubridate to convert to a date class that r understands, then tsibble to convert to tsibble
+
+```{r}
+# using same column name on either side of mutate just overrides that column
+# lubridate: enter date as it is first written so lubridate can understand (e.f. mdy, dmy, etc.)
+toolik_ts <- toolik %>% 
+  mutate(date = lubridate::mdy(date)) %>% 
+  as_tsibble(key = NULL, index = date)
+# index is whatever column contains your time series information  
+  
+```
+
+```{r}
+ggplot(data = toolik_ts, 
+       aes(x = date, y = mean_airtemp)) +
+  geom_line()
+
+
+```
+
+## Use "index_by()" function to aggregate time series information by intervals we specify (equivalent of group_by() in dplyr)
+
+```{r}
+
+# calculate the mean monthly air temperature- for each year for each month
+toolik_month <- toolik_ts %>% 
+  index_by(yr_mo = ~yearmonth(.)) %>% #(.)split this up by year and month across entire time series
+  summarize(monthly_mean_temp = mean(mean_airtemp, na.rm = TRUE))
+
+ggplot(data = toolik_month,
+       aes(x = yr_mo, y = monthly_mean_temp)) +
+  geom_line() +
+  facet_wrap(~month(yr_mo, label = TRUE)) #facet_wrap using lubridate
+
+```
+Aggregate by week:
+```{r}
+toolik_weekly <- toolik_ts %>% 
+  index_by(weekly = ~yearweek(.)) %>% 
+  summarize(weekly_airtemp = mean(mean_airtemp, na.rm = TRUE),
+            min_airtemp = min(mean_airtemp))
+
+```
+
+## Filtering time series
+Use filter_index() to specify ranges of time series to keep or exclude.
+```{r}
+
+# filter to only include observations from June 2000 - October 2001
+toolik_ts %>% 
+  filter_index("2000-06" ~ "2001-10") # yyyy-mm
+
+```
+```{r}
+toolik_ts %>% 
+  filter_index("2006-04-10" ~ "2006-05-15")  # specifies range of dates
+```
+
+## Seasonplots
+
+```{r}
+toolik_ts %>% 
+  filter(year(date) > 2014)  %>% # pull the year from the date column, keep obs > 2014
+  gg_season(y = mean_airtemp)
+# recognizes each year's season, then plots each year as a separate series
+
+toolik_month %>% 
+  gg_season(y = monthly_mean_temp) +
+  theme_light()
+```
+
+## Seasonal subseries plot
+
+```{r}
+toolik_month %>% 
+  gg_subseries(monthly_mean_temp)
+
+```
+
+## Calculating moving averages for time series data
+Using the slider package in R
+```{r}
+# generating vector of random values
+set.seed(2021)
+test <- rnorm(n = 100, mean = 40, sd = 10)
+
+slide(test, ~.x, .before = 2, .after = 2) # creates a window: for each observation, show that observation as well as the 2 before and the 2 after
+# orignial output from slide is a list (as opposed to numeric)
+```
+
+```{r}
+# moving average for windows of size 15 (days)
+roll_toolik_15 <- toolik_ts %>% 
+  mutate(ma_15d = as.numeric(slide(toolik_ts$mean_airtemp,
+                                   mean,
+                                   .before = 7,
+                                   .after = 7)))
+
+ggplot() +
+  geom_line(data = toolik_ts, 
+            aes(x = date, y = mean_airtemp), 
+            size= 0.2, 
+            color = "gray") +
+  geom_line(data = roll_toolik_15,
+            aes(x = date, 
+                y = ma_15d)) +
+  theme_minimal() 
+
+```
+
+## Create the ACF (autocorrelation function) visual represeentiation of how obs are correlated with prior observations on the same variable over specified lags (days, months, etc.)
+```{r}
+toolik_ts %>% 
+  ACF(mean_airtemp) %>% 
+  autoplot()
+# daily: tells us that observations separated by 1 day are highly correlated, decreasing slightly with each day
+
+toolik_month %>% 
+  ACF(monthly_mean_temp) %>% 
+  autoplot()
+# we see that observations that are 12 months apart ten to be strongly positively correlated. but observations that are 6 or 18 months apart are strongly negatively correlated. dotted blue lines show significance. shows that there is not a lot of dampening happening.
+```
+
+## Time series decomposition by STL (not classical)
+
+```{r}
+toolik_dec <- toolik_month %>% 
+  model(STL(monthly_mean_temp ~ season(window = Inf))) # start with monthly mean temperature modeled as a function of the different seasons
+
+components(toolik_dec) %>% 
+  autoplot()
+
+# PANELS
+#1. Original timeseries data
+#2. Any trend that's pulled out
+#3. Average seasonality
+#4. Residual
+# PAY ATTENTION TO SCALES!
+
+```
+
+
+
+
